@@ -1,8 +1,26 @@
 import sys
 import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 from numba import config
+import numba.cuda.cudadrv.driver as _numba_driver
+
+_orig_active_ctx_enter = _numba_driver._ActiveContext.__enter__
+
+def _patched_active_ctx_enter(self):
+    try:
+        return _orig_active_ctx_enter(self)
+    except _numba_driver.CudaAPIError as e:
+        if e.code == 201:  # CUDA_ERROR_INVALID_CONTEXT: stale handle, treat as no context
+            self._is_top = False
+            self.context_handle = None
+            self.devnum = None
+            return self
+        raise
+
+_numba_driver._ActiveContext.__enter__ = _patched_active_ctx_enter
+
 from merlin.io import Dataset
 import transformers
 sys.path.insert(0, 'transformers4rec')
@@ -18,22 +36,22 @@ from transformers4rec.torch.utils.data_utils import MerlinDataLoader
 
 config.CUDA_LOW_OCCUPANCY_WARNINGS = 0
 
-wandb.login()
-os.environ["WANDB_PROJECT"] = "predictive_modeling_large"  # name your W&B project
-os.environ["WANDB_LOG_MODEL"] = "false"  # save the model weights to W&B
-os.environ["WANDB_WATCH"]="false" # turn off watch to log faster
+# wandb.login()
+# os.environ["WANDB_PROJECT"] = "predictive_modeling_large"
+# os.environ["WANDB_LOG_MODEL"] = "false"
+# os.environ["WANDB_WATCH"]="false"
 
 
-def model(dataset_path="data/processed_nvt_new_data/part_0.parquet", 
-          model_name = "mixtral", 
+def model(dataset_path="data/processed_nvt/part_0.parquet",
+          model_name = "mixtral",
           train_bacth_size=128,
           val_batch_size=128,
-          train_paths="data/preproc_sessions_whole_new_data_1226_latest/train_new",
-          val_paths="data/preproc_sessions_whole_new_data_1226_latest/val_new",
+          train_paths="data/preproc_sessions/train_new",
+          val_paths="data/preproc_sessions/val_new",
           pretrained_emb_path="data/pre-trained-item-id-new-data_0122.npy"):
-    
+
     # this is just for getting the schema
-    train = Dataset(dataset_path, engine="parquet")
+    train = Dataset(dataset_path, engine="parquet", cpu=True)
     schema = train.schema
 
     schema = schema.select_by_name(
@@ -41,34 +59,41 @@ def model(dataset_path="data/processed_nvt_new_data/part_0.parquet",
 )
 
     item_cardinality = schema["item_id-list"].int_domain.max + 1
-    np_emb_item_id = np.load(pretrained_emb_path) # (item_cardinality, pretrained_dim)  # 3072 dims
-    embeddings_op = EmbeddingOperator(
-        np_emb_item_id, 
-        lookup_key="item_id-list", 
-        embedding_name="pretrained_item_id_embeddings",
-        # mmap=True,
-    )
 
+    # Use pretrained embeddings if available, otherwise fall back to learned embeddings
+    if os.path.exists(pretrained_emb_path):
+        np_emb_item_id = np.load(pretrained_emb_path) # (item_cardinality, pretrained_dim)  # 3072 dims
+        embeddings_op = EmbeddingOperator(
+            np_emb_item_id,
+            lookup_key="item_id-list",
+            embedding_name="pretrained_item_id_embeddings",
+            # mmap=True,
+        )
+        transforms = [embeddings_op]
+        print(f"Using pretrained embeddings: {pretrained_emb_path}, shape={np_emb_item_id.shape}")
+    else:
+        transforms = []
+        print(f"No pretrained embeddings found at {pretrained_emb_path}, using learned embeddings.")
 
     # set dataloader with pre-trained embeddings
     # with this approach we cant use the embedding projection function as we dont have the embedding tags!!!
     # so the pretrained_output_dims and normalizer doesnt work!!!
     data_loader = MerlinDataLoader.from_schema(
         schema,
-        Dataset(train_paths, schema=schema, engine="parquet"),
+        Dataset(train_paths, schema=schema, engine="parquet", cpu=True),
         max_sequence_length=110,
         batch_size=train_bacth_size,
-        transforms=[embeddings_op],
+        transforms=transforms,
         shuffle=True,
     )
 
-    
+
     val_data_loader = MerlinDataLoader.from_schema(
         schema,
-        Dataset(val_paths, schema=schema, engine="parquet"),
+        Dataset(val_paths, schema=schema, engine="parquet", cpu=True),
         max_sequence_length=110,
         batch_size=val_batch_size,
-        transforms=[embeddings_op],
+        transforms=transforms,
         shuffle=False,
     )
     
@@ -280,13 +305,12 @@ def train(model, schema, max_sequence_length, data_loader, val_data_loader):
                 fp16_full_eval=False, # ture will reduce cuda memory
                 logging_steps=100,
                 use_legacy_prediction_loop=False,
-                # report_to = ["wandb"],
-                report_to = [],
-                run_name="llama_all_stuff_att_ce_loss_0122_newdata",
+                report_to = ["tensorboard"],
+                run_name="mixtral_newdata_0226",
                 evaluation_strategy = 'steps',
                 save_strategy='steps', # for lora
-                save_steps=20000, # should be consistent with eval steps
-                eval_steps=20000,
+                save_steps=500, # should be consistent with eval steps
+                eval_steps=500,
                 save_total_limit=1,
                 load_best_model_at_end=True,  # not working for peft model
                 metric_for_best_model="eval_/loss", # costomized by t4rec
@@ -333,10 +357,10 @@ def train(model, schema, max_sequence_length, data_loader, val_data_loader):
 
 if __name__ == "__main__":
 
-    tr_model, schema, max_sequence_length, dataloader, val_dataloader = model(dataset_path="data/processed_nvt_new_data_1226_latest", 
-                                                                              model_name = "llama",
-                                                                              train_paths="data/preproc_sessions_whole_new_data_1226_latest/train_new",
-                                                                              val_paths="data/preproc_sessions_whole_new_data_1226_latest/val_new")
+    tr_model, schema, max_sequence_length, dataloader, val_dataloader = model(dataset_path="data/processed_nvt/part_0.parquet",
+                                                                              model_name = "mixtral",
+                                                                              train_paths="data/preproc_sessions/train_new",
+                                                                              val_paths="data/preproc_sessions/val_new")
 
     train(tr_model, schema, max_sequence_length, dataloader, val_dataloader)
 

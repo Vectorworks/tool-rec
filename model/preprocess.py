@@ -81,7 +81,6 @@ def preprocessing(inter_data_path,
         aggs={
             'item_id': ["list", "count"],
             'timestamp': ["list", "first"],
-            'event_time_dt': ["first"],
             'timestamp_interval': ["list"],
             'timestamp_interval_norm_global': ["list"],
             'classification': ["list", "count"],
@@ -217,8 +216,6 @@ def save_random_split_balance_distribution(
     pa.field("cat-list", pa.list_(pa.int64())),
     pa.field("classification-list", pa.list_(pa.int64())),
     pa.field("target-list", pa.list_(pa.int64())),
-    pa.field("day_index", pa.int64()),
-    pa.field("__null_dask_index__", pa.int64()),
     ])
 
     train_df = train_df.repartition(partition_size="600MB")

@@ -963,7 +963,7 @@ class MixtralConfig(T4RecConfig, transformers.MixtralConfig):
             rope_theta=1e6,
             sliding_window=None,
             attention_dropout=0.0,
-            output_router_logits=False, # for the auxillary loss
+            output_router_logits=True, # for the auxillary loss
             router_aux_loss_coef=0.001,
             output_attentions=False,
             **kwargs,

@@ -178,7 +178,7 @@ class TabularFeatures(MergeTabular):
                 )
         if categorical_tags:
             maybe_categorical_module = cls.EMBEDDING_MODULE_CLASS.from_schema(
-                schema, tags=categorical_tags, **kwargs
+                schema, tags=categorical_tags, max_sequence_length=max_sequence_length, **kwargs
             )
         if pretrained_embeddings_tags:
             maybe_pretrained_module = cls.PRETRAINED_EMBEDDING_MODULE_CLASS.from_schema(

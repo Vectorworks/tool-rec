@@ -99,9 +99,11 @@ def split_sessions_with_correlated_ids(data, min_items=50, max_items=100, output
         # we will not drop any remaining items, but the last session will probably have more items than the max_items
         # theoretically, the lentgh of the last session should be between [min_items, max_items + min_items)
         if 0 < len(group) < min_items:
-            last_chunk = new_sessions[-1]
-            last_chunk = pd.concat([last_chunk, group], ignore_index=True)
-            new_sessions[-1] = last_chunk
+            if new_sessions:  # session had at least one chunk to merge into
+                last_chunk = new_sessions[-1]
+                last_chunk = pd.concat([last_chunk, group], ignore_index=True)
+                new_sessions[-1] = last_chunk
+            # else: entire session < min_items, skip it (NVTabular filters short sessions anyway)
     augmented_data = pd.concat(new_sessions, ignore_index=True).reset_index(drop=True)
     augmented_data.to_parquet(output_file)
     return augmented_data
