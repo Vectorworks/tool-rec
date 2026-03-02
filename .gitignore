@@ -6,6 +6,8 @@ __pycache__/
 # C extensions
 *.so
 
+# 
+
 # Distribution / packaging
 .Python
 build/
@@ -162,3 +164,8 @@ cython_debug/
 data/
 !transformers4rec/data
 categories/
+mlruns/
+.claude/
+.vscode/
+tmp_test/
+

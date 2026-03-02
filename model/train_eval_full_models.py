@@ -1,8 +1,14 @@
 import sys
 import os
+from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
+# MLflow tracking
+os.environ["MLFLOW_TRACKING_URI"] = "http://localhost:5000"
+os.environ["MLFLOW_EXPERIMENT_NAME"] = "bim-command-recommendation"
+os.environ["MLFLOW_FLATTEN_PARAMS"] = "TRUE"
 from numba import config
 import numba.cuda.cudadrv.driver as _numba_driver
 
@@ -29,7 +35,7 @@ from transformers4rec.torch.ranking_metric import NDCGAt, RecallAt, MeanReciproc
 from transformers4rec.torch.masking import CausalLanguageModeling
 from model.patches import _pad_across_processes, _compute_masked_targets_mask_last_item
 from model.utils import SavePeftModelCallback, get_nb_trainable_parameters
-import wandb
+# import wandb  # disabled — using MLflow instead
 from peft import PeftModel
 from merlin.dataloader.ops.embeddings import EmbeddingOperator
 from transformers4rec.torch.utils.data_utils import MerlinDataLoader
@@ -305,8 +311,8 @@ def train(model, schema, max_sequence_length, data_loader, val_data_loader):
                 fp16_full_eval=False, # ture will reduce cuda memory
                 logging_steps=100,
                 use_legacy_prediction_loop=False,
-                report_to = ["tensorboard"],
-                run_name="mixtral_newdata_0226",
+                report_to = ["tensorboard", "mlflow"],
+                run_name=f"mixtral_newdata_{datetime.now().strftime('%m%d_%H%M')}",
                 evaluation_strategy = 'steps',
                 save_strategy='steps', # for lora
                 save_steps=500, # should be consistent with eval steps
