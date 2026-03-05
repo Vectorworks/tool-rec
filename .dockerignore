@@ -1,0 +1,16 @@
+data/
+tmp_test/
+mlruns/
+.git/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+*.tar.gz
+categories/
+visualization/
+prototype/
+deployment/

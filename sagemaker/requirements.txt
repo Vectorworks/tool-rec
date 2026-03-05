@@ -1,0 +1,10 @@
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+merlin-core==23.06.00
+merlin-dataloader==23.06.00
+transformers4rec==23.06.00
+transformers==4.46.3
+accelerate==0.26.0
+einops==0.7.0
+safetensors==0.4.5
+tensorflow-metadata==1.13.1

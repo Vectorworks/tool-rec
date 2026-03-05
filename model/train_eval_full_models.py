@@ -300,7 +300,7 @@ def model(dataset_path="data/processed_nvt/part_0.parquet",
 def train(model, schema, max_sequence_length, data_loader, val_data_loader):
 
     training_args = tr.trainer.T4RecTrainingArguments(
-                output_dir="./tmp_test",
+                output_dir=f"./tmp_test/mixtral_{datetime.now().strftime('%m%d_%H%M')}",
                 overwrite_output_dir = True,
                 max_sequence_length=max_sequence_length,
                 data_loader_engine='merlin',
