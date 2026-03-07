@@ -1,0 +1,2 @@
+#!/bin/bash
+exec python /opt/program/sagemaker_retrieval/sagemaker_serve.py
