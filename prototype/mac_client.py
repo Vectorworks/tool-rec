@@ -2,16 +2,17 @@
 mac_client.py
 
 Lightweight client for macOS that watches the Vectorworks log file,
-extracts command events, and sends them to the EC2 inference server.
+extracts command events, and sends them to a SageMaker endpoint.
 
 Requirements (pip install on Mac):
-    pip install requests watchdog
+    pip install boto3 watchdog
 
 Usage:
-    python mac_client.py --server http://<ec2-ip>:8000 --log-file "/path/to/VW User Log.txt"
+    python mac_client.py --log-file "/path/to/VW User Log.txt"
+    python mac_client.py --log-file "/path/to/VW User Log.txt" --endpoint bim-command-rec --region us-east-1
 
 Example log file locations:
-    macOS: ~/Library/Application Support/Vectorworks/2024/VW User Log.txt
+    macOS: ~/Library/Application Support/Vectorworks/2026/VW User Log.txt
 """
 
 import argparse
@@ -22,7 +23,7 @@ import sys
 import time
 from pathlib import Path
 
-import requests
+import boto3
 from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
 
@@ -108,45 +109,41 @@ def filter_events(events: list[dict]) -> list[str]:
     return commands
 
 
-# ── Server communication ──────────────────────────────────────────────────────
+# ── SageMaker communication ───────────────────────────────────────────────────
 
-def get_predictions(server_url: str, commands: list[str], top_k: int = 5) -> dict:
-    """Send commands to inference server and return predictions."""
+_sm_client = None
+
+
+def get_sm_client(region: str):
+    global _sm_client
+    if _sm_client is None:
+        _sm_client = boto3.client("sagemaker-runtime", region_name=region)
+    return _sm_client
+
+
+def get_predictions(endpoint_name: str, region: str, commands: list[str], top_k: int = 5) -> dict:
+    """Send commands to SageMaker endpoint and return predictions."""
     try:
-        resp = requests.post(
-            f"{server_url}/predict",
-            json={"commands": commands, "top_k": top_k},
-            timeout=10,
+        client = get_sm_client(region)
+        resp = client.invoke_endpoint(
+            EndpointName=endpoint_name,
+            ContentType="application/json",
+            Body=json.dumps({"commands": commands, "top_k": top_k}),
         )
-        resp.raise_for_status()
-        return resp.json()
-    except requests.RequestException as e:
-        print(f"  Error contacting server: {e}")
+        return json.loads(resp["Body"].read().decode("utf-8"))
+    except Exception as e:
+        print(f"  Error invoking SageMaker endpoint: {e}")
         return None
-
-
-DISPLAY_LINES = 0  # track how many lines the display occupies
-
-
-def clear_display():
-    """Move cursor up and clear previous display."""
-    global DISPLAY_LINES
-    if DISPLAY_LINES > 0:
-        sys.stdout.write(f"\033[{DISPLAY_LINES}A\033[J")
-        sys.stdout.flush()
 
 
 def display_status(commands: list[str], result: dict | None = None):
     """In-place terminal display of recent commands and predictions."""
-    global DISPLAY_LINES
-    clear_display()
-
-    lines = []
     try:
         cols = os.get_terminal_size().columns
     except OSError:
         cols = 80
 
+    lines = []
     lines.append(f"{'─' * cols}")
     recent = commands[-5:]
     lines.append(f"  Recent commands ({len(commands)} total):")
@@ -162,20 +159,21 @@ def display_status(commands: list[str], result: dict | None = None):
 
     lines.append(f"{'─' * cols}")
 
-    output = "\n".join(lines) + "\n"
-    sys.stdout.write(output)
+    # Restore saved cursor position, clear everything below, then redraw
+    sys.stdout.write("\033[u\033[J")
+    sys.stdout.write("\n".join(lines) + "\n")
     sys.stdout.flush()
-    DISPLAY_LINES = len(lines)
 
 
 # ── File watcher ──────────────────────────────────────────────────────────────
 
 class LogFileHandler(FileSystemEventHandler):
-    def __init__(self, log_path: str, filtered_path: str, server_url: str, top_k: int):
+    def __init__(self, log_path: str, filtered_path: str, endpoint_name: str, region: str, top_k: int):
         super().__init__()
         self.log_path = log_path
         self.filtered_path = filtered_path
-        self.server_url = server_url
+        self.endpoint_name = endpoint_name
+        self.region = region
         self.top_k = top_k
         self.file_pos = 0
         self.last_commands = []
@@ -251,7 +249,7 @@ class LogFileHandler(FileSystemEventHandler):
         # Always show recent commands; get predictions if enough history
         result = None
         if len(commands) >= 3:
-            result = get_predictions(self.server_url, commands, self.top_k)
+            result = get_predictions(self.endpoint_name, self.region, commands, self.top_k)
         display_status(commands, result)
 
 
@@ -260,12 +258,16 @@ class LogFileHandler(FileSystemEventHandler):
 def main():
     parser = argparse.ArgumentParser(description="BIM Command Recommendation Client")
     parser.add_argument(
-        "--server", required=True,
-        help="Inference server URL (e.g. http://ec2-ip:8000)",
-    )
-    parser.add_argument(
         "--log-file", required=True,
         help="Path to Vectorworks log file",
+    )
+    parser.add_argument(
+        "--endpoint", default="bim-command-rec",
+        help="SageMaker endpoint name (default: bim-command-rec)",
+    )
+    parser.add_argument(
+        "--region", default="us-east-1",
+        help="AWS region (default: us-east-1)",
     )
     parser.add_argument(
         "--top-k", type=int, default=5,
@@ -295,22 +297,27 @@ def main():
     # Clear filtered file on startup for a fresh session
     Path(filtered_path).write_text("", encoding="utf-8")
 
-    # Test server connection
-    print(f"Testing server connection: {args.server}")
+    # Test SageMaker endpoint
+    print(f"Testing SageMaker endpoint: {args.endpoint} ({args.region})")
     try:
-        resp = requests.get(f"{args.server}/health", timeout=5)
-        info = resp.json()
-        print(f"  Server OK: {info}")
+        sm = boto3.client("sagemaker", region_name=args.region)
+        status = sm.describe_endpoint(EndpointName=args.endpoint)["EndpointStatus"]
+        print(f"  Endpoint status: {status}")
     except Exception as e:
-        print(f"  Warning: server not reachable ({e}). Will retry on each prediction.")
+        print(f"  Warning: could not check endpoint ({e}). Will retry on each prediction.")
 
     print(f"Watching:  {log_path}")
     print(f"Filtered:  {filtered_path}")
-    print(f"Server:    {args.server}")
+    print(f"Endpoint:  {args.endpoint}")
+    print(f"Region:    {args.region}")
     print(f"Top-k:     {args.top_k}")
     print(f"Press Ctrl+C to stop.\n")
 
-    handler = LogFileHandler(log_path, filtered_path, args.server, args.top_k)
+    # Save cursor position — display_status will restore to here each update
+    sys.stdout.write("\033[s")
+    sys.stdout.flush()
+
+    handler = LogFileHandler(log_path, filtered_path, args.endpoint, args.region, args.top_k)
     observer = PollingObserver(timeout=args.poll_interval)
     observer.schedule(handler, str(Path(log_path).parent), recursive=False)
     observer.start()
